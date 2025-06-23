@@ -11,6 +11,9 @@ import Combine
 // MARK: - 复盘数据管理服务
 class ReviewService: ObservableObject {
     
+    // MARK: - 单例模式
+    static let shared = ReviewService()
+    
     // MARK: - 发布属性
     @Published var reviews: [ReviewEntry] = []
     @Published var isLoading: Bool = false
@@ -22,12 +25,14 @@ class ReviewService: ObservableObject {
     private let reviewsFileName = "reviews.json"
     
     // MARK: - 初始化
-    init() {
+    private init() {
         // 获取Documents目录
         documentsDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
         
         // 加载已保存的复盘记录
-        loadReviews()
+        Task {
+            await loadReviews()
+        }
     }
     
     // MARK: - 计算属性 - 统计数据
@@ -71,6 +76,14 @@ class ReviewService: ObservableObject {
         reviews.count
     }
     
+    /// 完成率
+    var completionRate: Double {
+        guard !reviews.isEmpty else { return 0 }
+        
+        let completedReviews = reviews.filter { $0.status == .completed }
+        return Double(completedReviews.count) / Double(reviews.count)
+    }
+    
     /// 今日是否已复盘
     var hasTodayReview: Bool {
         reviews.contains { Calendar.current.isDateInToday($0.date) }
@@ -83,40 +96,112 @@ class ReviewService: ObservableObject {
     
     // MARK: - 公共方法
     
-    /// 保存复盘记录
-    func saveReview(_ review: ReviewEntry) {
-        DispatchQueue.main.async {
+    /// 异步加载复盘记录
+    @MainActor
+    func loadReviews() async {
+        isLoading = true
+        errorMessage = nil
+        
+        let fileURL = documentsDirectory.appendingPathComponent(reviewsFileName)
+        
+        guard fileManager.fileExists(atPath: fileURL.path) else {
+            print("复盘记录文件不存在，创建空列表")
+            isLoading = false
+            return
+        }
+        
+        do {
+            let data = try Data(contentsOf: fileURL)
+            let loadedReviews = try JSONDecoder().decode([ReviewEntry].self, from: data)
+            
+            self.reviews = loadedReviews.sorted { $0.date > $1.date }
+            print("成功加载 \(loadedReviews.count) 条复盘记录")
+        } catch {
+            self.errorMessage = "加载复盘记录失败: \(error.localizedDescription)"
+            print("加载复盘记录失败: \(error)")
+        }
+        
+        isLoading = false
+    }
+    
+    /// 异步保存复盘记录
+    func saveReview(_ review: ReviewEntry) async throws {
+        await MainActor.run {
             self.isLoading = true
             self.errorMessage = nil
         }
         
         // 检查是否已存在今日复盘，如果存在则更新，否则添加
-        if let existingIndex = reviews.firstIndex(where: { Calendar.current.isDateInToday($0.date) }) {
-            reviews[existingIndex] = review
-        } else {
-            reviews.append(review)
+        await MainActor.run {
+            if let existingIndex = self.reviews.firstIndex(where: { Calendar.current.isDateInToday($0.date) }) {
+                self.reviews[existingIndex] = review
+            } else {
+                self.reviews.append(review)
+            }
+            
+            // 重新排序
+            self.reviews.sort { $0.date > $1.date }
         }
         
-        saveToFile()
+        try await saveToFile()
         
-        DispatchQueue.main.async {
+        await MainActor.run {
             self.isLoading = false
         }
     }
     
+    /// 更新复盘记录
+    func updateReview(_ review: ReviewEntry) async throws {
+        await MainActor.run {
+            if let index = self.reviews.firstIndex(where: { $0.id == review.id }) {
+                self.reviews[index] = review
+            }
+        }
+        
+        try await saveToFile()
+    }
+    
     /// 删除复盘记录
-    func deleteReview(_ review: ReviewEntry) {
-        DispatchQueue.main.async {
+    func deleteReview(_ review: ReviewEntry) async throws {
+        await MainActor.run {
             self.isLoading = true
             self.errorMessage = nil
         }
         
-        reviews.removeAll { $0.id == review.id }
-        saveToFile()
+        await MainActor.run {
+            self.reviews.removeAll { $0.id == review.id }
+        }
         
-        DispatchQueue.main.async {
+        try await saveToFile()
+        
+        await MainActor.run {
             self.isLoading = false
         }
+    }
+    
+    /// 导出所有数据
+    func exportAllData() async throws -> Data {
+        let exportData = ExportData(
+            exportDate: Date(),
+            reviews: reviews,
+            totalCount: totalReviews,
+            appVersion: "1.0.0"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = .prettyPrinted
+        
+        return try encoder.encode(exportData)
+    }
+    
+    /// 删除所有数据
+    func deleteAllData() async throws {
+        await MainActor.run {
+            self.reviews.removeAll()
+        }
+        
+        try await saveToFile()
     }
     
     /// 获取指定日期的复盘记录
@@ -144,52 +229,32 @@ class ReviewService: ObservableObject {
     
     // MARK: - 私有方法
     
-    /// 从文件加载复盘记录
-    private func loadReviews() {
+    /// 异步保存复盘记录到文件
+    private func saveToFile() async throws {
         let fileURL = documentsDirectory.appendingPathComponent(reviewsFileName)
         
-        guard fileManager.fileExists(atPath: fileURL.path) else {
-            print("复盘记录文件不存在，创建空列表")
-            return
-        }
-        
-        do {
-            let data = try Data(contentsOf: fileURL)
-            let loadedReviews = try JSONDecoder().decode([ReviewEntry].self, from: data)
-            
-            DispatchQueue.main.async {
-                self.reviews = loadedReviews
-                print("成功加载 \(loadedReviews.count) 条复盘记录")
-            }
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "加载复盘记录失败: \(error.localizedDescription)"
-                print("加载复盘记录失败: \(error)")
-            }
-        }
-    }
-    
-    /// 保存复盘记录到文件
-    private func saveToFile() {
-        let fileURL = documentsDirectory.appendingPathComponent(reviewsFileName)
-        
-        do {
-            let data = try JSONEncoder().encode(reviews)
-            try data.write(to: fileURL)
-            print("成功保存 \(reviews.count) 条复盘记录")
-        } catch {
-            DispatchQueue.main.async {
-                self.errorMessage = "保存复盘记录失败: \(error.localizedDescription)"
-                print("保存复盘记录失败: \(error)")
-            }
-        }
+        let data = try JSONEncoder().encode(reviews)
+        try data.write(to: fileURL)
+        print("成功保存 \(reviews.count) 条复盘记录")
     }
     
     /// 清空所有数据（用于测试）
     func clearAllData() {
-        reviews.removeAll()
-        saveToFile()
+        Task {
+            await MainActor.run {
+                self.reviews.removeAll()
+            }
+            try? await saveToFile()
+        }
     }
+}
+
+// MARK: - 导出数据结构
+struct ExportData: Codable {
+    let exportDate: Date
+    let reviews: [ReviewEntry]
+    let totalCount: Int
+    let appVersion: String
 }
 
 // MARK: - 扩展：导出功能
@@ -205,7 +270,11 @@ extension ReviewService {
             let data = try encoder.encode(reviews)
             return String(data: data, encoding: .utf8)
         } catch {
-            errorMessage = "导出失败: \(error.localizedDescription)"
+            Task {
+                await MainActor.run {
+                    self.errorMessage = "导出失败: \(error.localizedDescription)"
+                }
+            }
             return nil
         }
     }
