@@ -76,9 +76,7 @@ struct HistoryView: View {
             }
         }
         .onAppear {
-            Task {
-                await reviewService.loadReviews()
-            }
+            reviewService.loadReviews()
         }
         .sheet(isPresented: $showingFilterSheet) {
             filterSheet

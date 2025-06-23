@@ -409,7 +409,7 @@ struct ReviewFormView: View {
         
         Task {
             do {
-                try await reviewService.saveReview(review)
+                try await reviewService.addReview(review)
                 
                 await MainActor.run {
                     isSaving = false

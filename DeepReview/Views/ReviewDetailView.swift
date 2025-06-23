@@ -197,16 +197,73 @@ struct ReviewDetailView: View {
                 .disabled(aiService.isAnalyzing)
             }
             
+            // 分析状态指示器
             if aiService.isAnalyzing {
-                HStack {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                    Text("AI正在分析中...")
-                        .font(.caption)
+                VStack(spacing: 8) {
+                    HStack {
+                        ProgressView()
+                            .scaleEffect(0.8)
+                        Text("AI正在深度分析中...")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    
+                    // 进度条
+                    ProgressView(value: aiService.analysisProgress)
+                        .progressViewStyle(LinearProgressViewStyle())
+                        .frame(height: 4)
+                    
+                    Text("\(Int(aiService.analysisProgress * 100))% 完成")
+                        .font(.caption2)
                         .foregroundColor(.secondary)
                 }
+                .padding()
+                .background(Color(.systemGray6))
+                .cornerRadius(8)
+            }
+            
+            // 网络状态提示
+            if aiService.networkStatus == .disconnected {
+                HStack {
+                    Image(systemName: "wifi.slash")
+                        .foregroundColor(.red)
+                    Text("网络连接异常，请检查网络设置")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                }
+                .padding(.horizontal)
+            }
+            
+            // 错误信息显示
+            if let error = aiService.analysisError {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle")
+                            .foregroundColor(.orange)
+                        Text("分析失败")
+                            .font(.subheadline)
+                            .fontWeight(.medium)
+                            .foregroundColor(.orange)
+                    }
+                    
+                    Text(error)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    
+                    Button("重新尝试") {
+                        requestAIAnalysis()
+                    }
+                    .font(.caption)
+                    .buttonStyle(.bordered)
+                }
+                .padding()
+                .background(Color.orange.opacity(0.1))
+                .cornerRadius(8)
             }
         }
+        .animation(.easeInOut(duration: 0.3), value: aiService.isAnalyzing)
+        .animation(.easeInOut(duration: 0.3), value: aiService.analysisError)
         .padding()
         .background(Color(.systemGray6))
         .cornerRadius(12)
@@ -283,17 +340,11 @@ struct ReviewDetailView: View {
     
     private func requestAIAnalysis() {
         Task {
-            do {
-                let analysis = try await aiService.analyzeReview(review)
-                
+            if let analysis = await aiService.analyzeReview(review) {
                 await MainActor.run {
                     aiAnalysisText = analysis
                     
                     // 保存分析结果到复盘记录
-                    var updatedReview = review
-                    let mirror = Mirror(reflecting: updatedReview)
-                    
-                    // 创建新的ReviewEntry实例（因为是struct，需要重新创建）
                     let newReview = ReviewEntry(
                         id: review.id,
                         date: review.date,
@@ -318,10 +369,9 @@ struct ReviewDetailView: View {
                     
                     showingAIAnalysis = true
                 }
-                
-            } catch {
+            } else {
                 await MainActor.run {
-                    alertMessage = "AI分析失败：\(error.localizedDescription)"
+                    alertMessage = "AI分析失败，请稍后重试"
                     showingAlert = true
                 }
             }
